@@ -54,6 +54,7 @@ public class incrementData1 {
                                        String keyLookup  //用于插入或更新用于比较的字段，多个以逗号隔开
 
 
+
     ) throws Exception {
 
         LogChannelFactory logChannelFactory = new org.pentaho.di.core.logging.LogChannelFactory();

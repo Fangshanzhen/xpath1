@@ -1,8 +1,11 @@
 package com.kettle.demo.utils;
 
+import com.alibaba.fastjson.JSONArray;
+import com.alibaba.fastjson.JSONObject;
 import com.kettle.demo.newUpdate.newUpdateMeta;
 import com.kettle.demo.response.logResponse;
 import lombok.extern.slf4j.Slf4j;
+
 import org.json.JSONException;
 import org.pentaho.di.core.Const;
 import org.pentaho.di.core.KettleEnvironment;
@@ -26,6 +29,7 @@ import org.pentaho.di.trans.steps.tableoutput.TableOutputMeta;
 import java.sql.*;
 import java.text.SimpleDateFormat;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -54,7 +58,6 @@ public class incrementData1 {
                                        String keyLookup  //用于插入或更新用于比较的字段，多个以逗号隔开
 
 
-
     ) throws Exception {
 
         LogChannelFactory logChannelFactory = new org.pentaho.di.core.logging.LogChannelFactory();
@@ -62,8 +65,6 @@ public class incrementData1 {
         KettleEnvironment.init();
         DatabaseMeta originalDbmeta = null; //
         DatabaseMeta targetDbmeta = null; //
-
-
         try {
 
             originalDbmeta = new DatabaseMeta(originalDbname, originalDatabaseType, "Native(JDBC)", originalIp, originalDbname, originalPort, originalUsername, originalPassword);
@@ -92,6 +93,8 @@ public class incrementData1 {
                         String sql = null;
                         if (originalDatabaseType.equals("ORACLE")) {
                             sql = "select * from " + originalSchema + "." + table + " where rownum <=10 ";  //用sql来获取字段名及属性以便在目标库中创建表
+                        } else if (originalDatabaseType.equals("MSSQL")) {
+                            sql = "select top 10 * from " + originalDatabase + "." + originalSchema + "." + table;   //sqlserver  没有limit 用top
                         } else {
                             sql = "select * from " + originalSchema + "." + table + "  limit 10;";
                         }
@@ -287,6 +290,10 @@ public class incrementData1 {
         LocalDateTime datetime = LocalDateTime.parse(maxTime, formatter);
         // 在 LocalDateTime 上加一秒
         datetime = datetime.plusSeconds(1);
+        if (datetime.toInstant(ZoneOffset.of("+8")).toEpochMilli() > LocalDateTime.now().toInstant(ZoneOffset.of("+8")).toEpochMilli()) {
+            datetime = LocalDateTime.now();
+        }
+
         // 将 maxTime 转回字符串
         maxTime = formatter.format(datetime);   //把maxTime格式固定yyyy-MM-dd HH:mm:ss
 
@@ -318,14 +325,21 @@ public class incrementData1 {
         RowMetaAndData rowMetaAndData = targetDatabase.getOneRow("SELECT COUNT(*) FROM  " + targetSchema + "." + table);
         // 创建步骤2并添加到转换中
         StepMeta step2 = null;
-        if ((Long) rowMetaAndData.getData()[0] > 0) { //表有数据，插入/更新
-            step2 = createStep3(transMeta, targetDbmeta, targetSchema, table, keyLookup, condition, rowMetaInterface);
-            transMeta.addStep(step2);
-            kettleLog.logBasic("插入/更新");
+        if ((Long) rowMetaAndData.getData()[0] > 0) { //表有数据
+            if (keyLookup != null) { //存在比较的字段 ，插入/更新
+                step2 = createStep3(transMeta, targetDbmeta, targetSchema, table, keyLookup, condition, rowMetaInterface);
+                transMeta.addStep(step2);
+                kettleLog.logBasic("-----插入/更新---");
+            } else {
+                step2 = createStep2(transMeta, targetDbmeta, targetSchema, table, "1");
+                transMeta.addStep(step2);
+                kettleLog.logBasic("-----表输出1---");
+            }
+
         } else { //表没有数据，表输出 不清空原数据
             step2 = createStep2(transMeta, targetDbmeta, targetSchema, table, "1");
             transMeta.addStep(step2);
-            kettleLog.logBasic("表输出");
+            kettleLog.logBasic("-----表输出2---");
         }
 
         transMeta.addStep(step2);
@@ -341,7 +355,7 @@ public class incrementData1 {
          * 新建索引语句，对于text、longtext类型的字段建索引需要指定长度，否则会报错
          */
         if (sql1.toLowerCase().contains("create")) {
-            if (indexName!=null && indexName.length() > 0 && index.length() > 0) {
+            if (indexName != null && indexName.length() > 0 && index.length() > 0) {
                 for (int i = 0; i < rowMetaInterface.size(); i++) {
                     ValueMetaInterface v = rowMetaInterface.getValueMeta(i);
                     String x = originalDbmeta.getFieldDefinition(v, null, null, false); // ipid LONGTEXT  b TEXT
@@ -375,11 +389,20 @@ public class incrementData1 {
                         }
                     }
                 }
+
                 if (targetSchema.length() > 0) {   //分情况添加索引语句
                     String indexSql = "CREATE UNIQUE INDEX " + indexName + " ON " + targetSchema + "." + table + " (" + index + "); ";
+
+                    if (sql1.toLowerCase().contains((index + " " + "TEXT").toLowerCase()) || sql1.toLowerCase().contains((index + " " + "LONGTEXT").toLowerCase())) {
+                        indexSql = "CREATE UNIQUE INDEX " + indexName + " ON " + targetSchema + "." + table + " (" + index + "(255)" + "); ";
+                    }
+
                     sql1 = sql1 + Const.CR + indexSql;
                 } else {
-                    String indexSql = "CREATE UNIQUE INDEX " + indexName + " ON " + targetSchema + " (" + index + "); ";
+                    String indexSql = "CREATE UNIQUE INDEX " + indexName + " ON " + table + " (" + index + "); ";
+                    if (sql1.toLowerCase().contains((index + " " + "TEXT").toLowerCase()) || sql1.toLowerCase().contains((index + " " + "LONGTEXT").toLowerCase())) {
+                        indexSql = "CREATE UNIQUE INDEX " + indexName + " ON " + table + " (" + index + "(255)" + "); ";
+                    }
                     sql1 = sql1 + Const.CR + indexSql;
                 }
             } else {
@@ -411,6 +434,8 @@ public class incrementData1 {
                 x1 = x.replace("text", "VARCHAR(255)");
             } else if (x.contains("longtext")) {
                 x1 = x.replace("longtext", "VARCHAR(255)");
+            } else {
+                x1 = x;
             }
         }
 

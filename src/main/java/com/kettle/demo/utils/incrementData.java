@@ -27,35 +27,31 @@ import org.pentaho.di.trans.steps.tableinput.TableInputMeta;
 import org.pentaho.di.trans.steps.tableoutput.TableOutputMeta;
 
 import java.sql.*;
-import java.text.SimpleDateFormat;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
- * 最新代码，用于非读日志式增量  1 为时间戳  3为全量
+ * 最新代码20240205，用于非读日志式增量  1 为时间戳  3为全量
  */
 
 @Slf4j
-public class incrementData1 {
+public class incrementData {
     public static String incrementData(String originalDatabaseType, String originalDbname, String originalSchema, String originalIp, String originalPort,
                                        String originalUsername, String originalPassword,
                                        String targetDatabaseType, String targetDbname, String targetSchema, String targetIp, String targetPort,
                                        String targetUsername, String targetPassword,
                                        String type,     //1 为时间戳  3为全量
-                                       String condition, //当为1时填时间戳字段；当为2是填日志路径
-                                       String tableList, //表名，多表以逗号隔开，//
+                                       String condition, //当为1时填时间戳字段
+                                       String tableList, //表名，多表以逗号隔开
                                        String tableSql,// 加上支持sql的功能,以;结束  注意写sql语句的时候一定要加schema.
-                                       String index, //索引字段名 ipid,pid 复合索引以逗号隔开
+                                       String index, //索引字段名 ipid,pid 复合索引以#隔开; 多个表以逗号隔开
                                        String indexName,  //索引名称
                                        String etlTime,  //没有时间戳的时候，增加的时间戳字段，
-                                       String keyLookup  //用于插入或更新用于比较的字段，多个以逗号隔开
+                                       String keyLookup  //用于插入或更新用于比较的字段，多个以逗号隔开,type为1时可加可不加，type为3时要加
 
 
     ) throws Exception {
@@ -80,16 +76,34 @@ public class incrementData1 {
         Database targetDatabase = new Database(targetDbmeta);
         targetDatabase.connect(); //连接数据库
 
+        List<String> allIndexList = null;
+        if (index.contains(",")) {
+            allIndexList = Arrays.asList(index.split(","));
+        } else {
+            allIndexList = Collections.singletonList(index);
+        }
+
+        List<String> allKeyLookup = null;
+        if (keyLookup.contains(",")) {
+            allKeyLookup = Arrays.asList(keyLookup.split(","));
+        } else {
+            allKeyLookup = Collections.singletonList(keyLookup);
+        }
+
+
+        //---------------------------------填入表名的---------------------------------------
         try {
-            if (tableList != null && tableSql == null) {//填入表名的
+            if (tableList != null && tableSql == null) {
                 List<String> allTableList = null;
                 if (tableList.contains(",")) {
                     allTableList = Arrays.asList(tableList.split(","));
                 } else {
                     allTableList = Collections.singletonList(tableList);
                 }
+
                 if (allTableList.size() > 0) {
-                    for (String table : allTableList) {
+                    for (int i = 0; i < allIndexList.size(); i++) {
+                        String table = allTableList.get(i);
                         String sql = null;
                         if (originalDatabaseType.equals("ORACLE")) {
                             sql = "select * from " + originalSchema + "." + table + " where rownum <=10 ";  //用sql来获取字段名及属性以便在目标库中创建表
@@ -130,16 +144,16 @@ public class incrementData1 {
 
                         if (sql1.length() > 0) {
                             if (!checkTableExist(targetDatabase, targetSchema, table)) {  //判断目标数据库中表是否存在
-                                sameCreate(table, sql1, rowMetaInterface, originalDbmeta, originalDatabaseType, targetDatabaseType, targetSchema, targetDatabase, index, indexName);
+                                sameCreate(table, sql1, rowMetaInterface, originalDbmeta, originalDatabaseType, targetDatabaseType, targetSchema, targetDatabase, allIndexList.get(i), table + "_" + indexName);
                                 kettleLog.logBasic(table + " 创建输出表成功！");
                             }
                         }
 
                         if (type.equals("1")) {//类型为1 有时间戳字段
-                            type1(table, condition, originalDbmeta, originalSchema, originalDatabaseType, targetDbmeta, targetSchema, targetDatabase, tableList, null, keyLookup, rowMetaInterface);
+                            type1(table, condition, originalDbmeta, originalSchema, originalDatabaseType, targetDbmeta, targetSchema, targetDatabase, tableList, null, allKeyLookup.get(i), rowMetaInterface);
                         }
                         if (type.equals("3")) {//类型为3，表示每次进行删除后全量
-                            type3(table, originalDbmeta, originalSchema, targetDbmeta, targetDatabase, targetSchema, tableList, null, keyLookup, etlTime, rowMetaInterface);
+                            type3(table, originalDbmeta, originalSchema, targetDbmeta, targetDatabase, targetSchema, tableList, null, allKeyLookup.get(i), etlTime, rowMetaInterface);
                         }
 //                            if (type.equals("2")) {//类型为2，读取日志获取数据
 //                                type2(table, condition, originalDatabaseType, originalSchema, originalDbmeta, targetSchema, targetDatabaseType, targetDatabase, targetDbmeta, tableList, null);
@@ -148,15 +162,17 @@ public class incrementData1 {
                     }
                 }
             }
-            if (tableList == null && tableSql != null) {//填入的是sql语句 ,多个sql语句用;隔开
+
+            //--------------------------填入的是sql语句 ,多个sql语句用;隔开--------------------------
+            if (tableList == null && tableSql != null) {
                 String[] sqlList;
                 if (tableSql.contains(";")) {
                     sqlList = tableSql.split(";");
                 } else {
                     sqlList = new String[]{tableSql};
                 }
-                for (String sql : sqlList) {
-
+                for (int i = 0; i < sqlList.length; i++) {
+                    String sql = sqlList[i];
                     if (sql.toLowerCase().contains("select") && sql.toLowerCase().contains("from") && sql.toLowerCase().contains((originalSchema + ".").toLowerCase())) {
                         int a = sql.toLowerCase().indexOf((originalSchema + ".").toLowerCase());
                         a = a + originalSchema.length() + 1;
@@ -190,18 +206,17 @@ public class incrementData1 {
                             }
                         }
 
-
                         if (sql1.length() > 0) {
                             if (!checkTableExist(targetDatabase, targetSchema, table)) {  //判断目标数据库中表是否存在
-                                sameCreate(table, sql1, rowMetaInterface, originalDbmeta, originalDatabaseType, targetDatabaseType, targetSchema, targetDatabase, index, indexName);
+                                sameCreate(table, sql1, rowMetaInterface, originalDbmeta, originalDatabaseType, targetDatabaseType, targetSchema, targetDatabase, allIndexList.get(i), table + "_" + indexName);
                                 kettleLog.logBasic(table + " 创建输出表成功！");
                             }
                         }
                         if (type.equals("1") && condition != null) {//有时间戳字段
-                            type1(table, condition, originalDbmeta, originalSchema, originalDatabaseType, targetDbmeta, targetSchema, targetDatabase, null, sql, keyLookup, rowMetaInterface);
+                            type1(table, condition, originalDbmeta, originalSchema, originalDatabaseType, targetDbmeta, targetSchema, targetDatabase, null, sql, allKeyLookup.get(i), rowMetaInterface);
                         }
                         if (type.equals("3")) {//类型为3，表示每次进行删除后全量
-                            type3(table, originalDbmeta, originalSchema, targetDbmeta, targetDatabase, targetSchema, null, sql, keyLookup, etlTime, rowMetaInterface);
+                            type3(table, originalDbmeta, originalSchema, targetDbmeta, targetDatabase, targetSchema, null, sql, allKeyLookup.get(i), etlTime, rowMetaInterface);
                         }
 //                            if (type.equals("2")) {//类型为2，读取日志获取数据
 //                                type2(table, condition, originalDatabaseType, originalSchema, originalDbmeta, targetSchema, targetDatabaseType, targetDatabase, targetDbmeta, null, sql);
@@ -360,8 +375,8 @@ public class incrementData1 {
                     ValueMetaInterface v = rowMetaInterface.getValueMeta(i);
                     String x = originalDbmeta.getFieldDefinition(v, null, null, false); // ipid LONGTEXT  b TEXT
 
-                    if (index.contains(",")) {   //ipid,pid 复合索引
-                        String[] indexes = index.split(",");
+                    if (index.contains("#")) {   //ipid,pid 复合索引
+                        String[] indexes = index.split("#");
                         for (int j = 0; j < indexes.length; j++) {
                             String in = indexes[j];
                             String x1 = null;
@@ -388,6 +403,10 @@ public class incrementData1 {
                             }
                         }
                     }
+                }
+
+                if (index.contains("#")) {
+                    index = index.replace("#", ",");
                 }
 
                 if (targetSchema.length() > 0) {   //分情况添加索引语句
@@ -591,136 +610,7 @@ public class incrementData1 {
         LogChannelFactory logChannelFactory = new org.pentaho.di.core.logging.LogChannelFactory();
         LogChannel kettleLog = logChannelFactory.create("type2：根据数据库日志进行增量--");
 
-        if (originalDatabaseType.equals("POSTGRESQL")) {  //读取postgresql日志的
-            /**
-             * 需要在目标数据库中建一张表记录上次日志读取到的位置logpointer
-             **/
-            Long logPointer;
-            Statement logPointerTime = null;
-            ResultSet resultSetlogPointerTime = null;
-            String pointerSql = "SELECT pointer  FROM  " + targetSchema + ".logpointer  where tablename= '" + table + "'";
-            List<String> pointList = new ArrayList<>();
-            try {
-                logPointerTime = executeSql(pointerSql, targetDatabase.getConnection());
-                resultSetlogPointerTime = logPointerTime.executeQuery(pointerSql);
-                if (resultSetlogPointerTime != null) {
-                    pointList = ResultSetUtils1.allResultSet(resultSetlogPointerTime);
-                }
-                if (pointList == null || (pointList.size() == 0) || (pointList.size() > 0 && pointList.get(0) == null)
-                        || (pointList.size() > 0 && pointList.get(0).equals("")) || (pointList.size() > 0 && pointList.get(0).equals("null"))) {
-                    TransMeta transMeta = createTrans(table, originalDbmeta, targetDbmeta);
-                    //第一次全量传数据 UPDATE test.logpointer   SET pointer= null,tablename=null
-                    String dataSql = null;
-                    if (tableList != null && tableSql == null) {
-                        dataSql = "select * from " + originalSchema + "." + table;
-                    }
-                    if (tableList == null && tableSql != null) {
-                        dataSql = tableSql;
-                    }
-                    StepMeta step1 = createStep1(transMeta, dataSql, originalDbmeta);
-                    transMeta.addStep(step1);
-                    StepMeta step2 = createStep2(transMeta, targetDbmeta, targetSchema, table, "1");
-                    transMeta.addStep(step2);
-                    TransHopMeta TransHopMeta = createHop(step1, step2);
-                    transMeta.addTransHop(TransHopMeta);
-                    runTrans(transMeta);
-                    logResponse logResponse = ReadLogUtils.call(condition, 0); //第一次从0开始读取
-                    if (logResponse != null) {
-                        if (logResponse.getPointer() != null) {
-                            logPointer = logResponse.getPointer();
-                            String sqlNew = "INSERT INTO " + targetSchema + ".logpointer  (pointer,tablename) VALUES " + "('" + logPointer + "'," + " '" + table + "')";//更新logpointer表，记录全量数据时的日志指针
-                            logPointerTime = executeSql(sqlNew, targetDatabase.getConnection());
-                            logPointerTime.execute(sqlNew);
-                        }
-                    }
-                } else { //以后就读日志了
-                    logResponse logResponse = ReadLogUtils.call(condition, Long.parseLong(pointList.get(0))); //从表中读日志上次的位置
-                    if (logResponse != null) {
-                        if (logResponse.getList() != null) {
-                            List<String> list = logResponse.getList();
-                            for (int i = 0; i < list.size(); i++) {
-                                if (list.get(i).contains(originalSchema + "." + table) && list.get(i).contains("LOG")) {
-                                    String ddl = list.get(i);
-                                    if (ddl.toLowerCase().contains("insert")) {
-                                        int a = ddl.toLowerCase().indexOf("insert");
-                                        ddl = ddl.substring(a);
-                                    }
-                                    if (ddl.toLowerCase().contains("update")) {
-                                        int a = ddl.toLowerCase().indexOf("update");
-                                        ddl = ddl.substring(a);
-                                    }
-                                    if (ddl.toLowerCase().contains("delete")) {
-                                        int a = ddl.toLowerCase().indexOf("delete");
-                                        ddl = ddl.substring(a);
-                                    }
-                                    StringBuilder stringBuilder = new StringBuilder();
-                                    stringBuilder.append(ddl);
-                                    for (int j = i + 1; j < list.size(); j++) {
-                                        String parameters = list.get(j);
-                                        if (!parameters.toLowerCase().contains("parameters: $")) {
-                                            stringBuilder.append("  ").append(parameters);
-                                        }
-                                        if (parameters.toLowerCase().contains("parameters: $")) {
 
-                                            // 定义正则表达式匹配占位符
-                                            String regex = "\\$\\d+";
-                                            Pattern pattern = Pattern.compile(regex);
-
-                                            Matcher matcher = pattern.matcher(stringBuilder);
-                                            while (matcher.find()) {
-                                                String paramIndex = matcher.group(); // 获取占位符，例如：$1
-                                                String paramValue = ""; // 定义参数值
-
-                                                // 在parameters中查找与占位符匹配的参数值
-                                                String searchStr = paramIndex + " = ";
-                                                int startIndex = parameters.indexOf(searchStr);
-                                                if (startIndex > -1) {
-                                                    int endIndex = parameters.indexOf(",", startIndex);
-                                                    if (endIndex == -1) {
-                                                        endIndex = parameters.length(); // 参数值是parameters中的最后一项
-                                                    }
-                                                    // 获取参数值
-                                                    paramValue = parameters.substring(startIndex + searchStr.length(), endIndex);
-                                                }
-                                                // 处理参数值中的单引号
-                                                paramValue = paramValue.replaceAll("'", "'");
-                                                stringBuilder = new StringBuilder(stringBuilder.toString().replace(paramIndex, paramValue));
-                                            }
-                                            break;
-                                        }
-                                    }
-
-                                    String logSql = stringBuilder.toString();
-                                    kettleLog.logBasic("根据日志转为sql： " + logSql);
-                                    if (logSql.contains((originalSchema + "." + table))) {
-                                        logSql = logSql.replace((originalSchema + "." + table), (targetSchema + "." + table)); //替换schema
-                                        logPointerTime = executeSql(logSql, targetDatabase.getConnection());//在目标数据库中执行与日志中相同的sql语句
-                                        if (logSql.contains("\"") && targetDatabaseType.equals("MYSQL")) { //mysql中插入数据有双引号会报错
-                                            logSql = logSql.replace("\"", "");
-                                        }
-                                        logPointerTime.execute(logSql);
-                                        //------sql执行成功才更新日志指针位置-----
-                                        if (logResponse.getPointer() != null) {
-                                            logPointer = logResponse.getPointer();
-                                            String sqlNew = "UPDATE " + targetSchema + ".logpointer  " + " SET pointer= " + "'" + logPointer + "'" + " where tablename= '" + table + "'";
-                                            logPointerTime = executeSql(sqlNew, targetDatabase.getConnection());
-                                            logPointerTime.execute(sqlNew);
-                                        }
-                                    }
-                                }
-                            }
-
-                        }
-
-                    }
-
-                }
-            } catch (Exception e) {
-                throw new Exception("ERROR：   " + e);
-            } finally {
-                close(null, logPointerTime, resultSetlogPointerTime);
-            }
-        }
     }
 
 
